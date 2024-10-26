@@ -1,0 +1,24 @@
+---
+
+- hosts: all
+  become: true
+  tasks:
+
+  - name: update repository index
+    yum:
+      update_cache: yes
+
+  - name: install apache package
+    yum:
+      name: httpd
+      state: latest
+      
+  - name: add php support for apache
+    yum:
+      name: php, php-mysqlnd, php-mbstring, php-opcache, php-gd
+      state: latest
+
+  - name: start service apache
+    service:
+     name: httpd.service
+     state: started
