@@ -1,0 +1,208 @@
+---
+
+- name: Install PostgreSQL 17.2 and configure repository
+  hosts: postgresql_servers
+  become: true
+  vars_files:
+    - vault.yml
+    - vars.yml
+  tasks:
+
+    - name: Create directory for PostgreSQL
+      file:
+        path: /u01/data/postgres
+        state: directory
+        mode: '0755' # owner full rights, others to read and execute
+
+    - name: Check if PostgreSQL GPG key is installed
+      shell: rpm -q gpg-pubkey | grep -q 'pgdg-redhat'
+      register: gpg_check # save shell result in variable
+      ignore_errors: true # if key not installed, play won't crash
+
+    - name: Install PostgreSQL repository
+      dnf:
+        name: https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+        state: present
+        disable_gpg_check: true
+
+    - name: Disable the default PostgreSQL module
+      shell: dnf -qy module disable postgresql
+      ignore_errors: true # if key not installed, play won't crash
+
+    - name: Install PostgreSQL 17.2 packages
+      dnf:
+        name:
+          - postgresql17
+          - postgresql17-server
+          - postgresql17-contrib
+        state: present
+
+    - name: Change ownership of PostgreSQL directory
+      file:
+        path: /u01/data/postgres
+        owner: postgres
+        group: postgres
+        recurse: yes
+
+    - name: Create systemd override directory for PostgreSQL
+      file:
+        path: /etc/systemd/system/postgresql-17.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Set custom PGDATA in systemd override
+      copy:
+        content: |
+          [Service]
+          Environment=PGDATA=/u01/data/postgres
+        dest: /etc/systemd/system/postgresql-17.service.d/override.conf
+        mode: '0644' # owner full rights, others to read
+
+    - name: Reload systemd daemon to apply changes
+      systemd:
+        daemon_reload: true
+
+    - name: Initialize PostgreSQL database with custom data directory
+      shell: |
+        export PGSETUP_INITDB_OPTIONS="--data-checksums --pgdata=/u01/data/postgres"
+        /usr/pgsql-17/bin/postgresql-17-setup initdb
+      args:
+        executable: /bin/bash
+      become_user: root
+
+    - name: Add IP to pg_hba.conf
+      lineinfile:
+        path: /u01/data/postgres/pg_hba.conf
+        line: "host    all             all             192.168.0.195/32            scram-sha-256"
+        insertafter: EOF
+        create: true # if file not exist, create it
+
+    - name: Reload PostgreSQL configuration
+      systemd:
+        name: postgresql-17
+        state: reloaded
+
+    - name: Enable and start PostgreSQL service
+      systemd:
+        name: postgresql-17
+        enabled: true
+        state: started
+
+    - name: Ensure firewalld is installed
+      package:
+        name: firewalld
+        state: present
+
+    - name: Enable and start firewalld service
+      systemd:
+        name: firewalld
+        enabled: yes
+        state: started
+
+    - name: Allow PostgreSQL default port (5432/tcp) through the firewall
+      firewalld:
+        port: 5432/tcp
+        permanent: true
+        state: enabled
+        immediate: true
+        zone: public
+
+
+    - name: Reload firewall to apply changes
+      command: firewall-cmd --reload
+      become: true
+
+    - name: Check PostgreSQL service status
+      systemd:
+        name: postgresql-17
+        state: started
+        enabled: true
+
+    - name: Show PostgreSQL logs
+      shell: journalctl -u postgresql-17 --since "1 hour ago"
+      register: postgres_logs # save result in variable
+      changed_when: false
+
+    - name: Show PostgreSQL logs on screen
+      debug:
+        var: postgres_logs.stdout
+
+    - name: Set options
+      community.postgresql.postgresql_set:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+      become: true
+      become_user: postgres
+      with_items: "{{ postgresql_options | default([]) }}"
+
+    - name: Reload PostgreSQL configuration
+      systemd:
+        name: postgresql-17
+        state: reloaded
+
+    - name: Create the databases
+      community.postgresql.postgresql_db:
+        name: "{{ item }}"
+        encoding: "UTF-8"
+      become: true
+      become_user: postgres
+      with_items: "{{ postgresql_databases }}"
+
+    - name: Create the users
+      community.postgresql.postgresql_user:
+        db: "{{ item.db }}"
+        name: "{{ item.name }}"
+        password: "{{ item.password | default(omit) }}"
+      become: true
+      become_user: postgres
+      environment:
+        PGOPTIONS: "-c password_encryption=scram-sha-256"
+      with_items: "{{ postgresql_users }}"
+
+    - name: Create the schemas
+      community.postgresql.postgresql_schema:
+        db: "{{ item.db }}"
+        name: "{{ item.name }}"
+        owner: "{{ item.name }}"
+      become: true
+      become_user: postgres
+      with_items: "{{ postgresql_schemas }}"
+
+    - name: Set the user privileges
+      community.postgresql.postgresql_privs:
+        database: "{{ item.db }}"
+        state: present
+        objs: "{{ item.objs | default(omit) }}"
+        privs: "{{ item.privs }}"
+        type: "{{ item.type | default(omit) }}"
+        roles: "{{ item.roles | default(omit) }}"
+      become: true
+      become_user: postgres
+      with_items: "{{ postgresql_privs | default([]) }}"
+
+    - name: Add entries to pg_hba
+      community.postgresql.postgresql_pg_hba:
+        dest: "/u01/data/postgres/pg_hba.conf"
+        address: "{{ item.address | default(omit) }}"
+        contype: "{{ item.contype }}"
+        databases: "{{ item.databases }}"
+        method: "{{ item.method }}"
+        users: "{{ item.users }}"
+      become: true
+      become_user: postgres
+      with_items: "{{ postgresql_hba_entries }}"
+
+    - name: Enable the HSTORE extension
+      community.postgresql.postgresql_ext:
+        name: "{{ item.name }}"
+        db: "{{ item.db }}"
+        state: present
+      become: true
+      become_user: postgres
+      with_items: "{{ postgresql_extensions | default([]) }}"
+
+    - name: Reload PostgreSQL configuration
+      systemd:
+        name: postgresql-17
+        state: reloaded
+

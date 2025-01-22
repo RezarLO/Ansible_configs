@@ -1,1 +1,2 @@
-192.168.186.112
+[postgresql_servers]
+POST-ANS ansible_host=192.168.186.125

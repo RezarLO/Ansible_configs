@@ -1,0 +1,85 @@
+---
+- hosts: postgresql_servers
+  become: yes
+
+  vars_files:
+    - vars.yml
+    - vault.yml
+
+  handlers:
+    - name: Restart PostgreSQL
+      ansible.builtin.systemd:
+        name: postgresql-17
+        state: restarted
+
+  tasks:
+    - name: Uninstall existing PostgreSQL
+      ansible.builtin.yum:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: absent
+
+    - name: Install required repository for PostgreSQL 17
+      ansible.builtin.yum:
+        name: https://download.postgresql.org/pub/repos/yum/17/redhat/rhel-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+        state: present
+
+    - name: Disable built-in PostgreSQL repository
+      ansible.builtin.yum:
+        name: postgresql
+        disable_excludes: all
+
+    - name: Install PostgreSQL 17 and dependencies
+      ansible.builtin.yum:
+        name:
+          - postgresql17-server
+          - postgresql17-contrib
+          - python3-psycopg2
+        state: present
+        update_cache: true
+
+    - name: Initialize the PostgreSQL 17 database
+      ansible.builtin.command:
+        cmd: "/usr/pgsql-17/bin/postgresql-17-setup initdb"
+        creates: /var/lib/pgsql/17/data/PG_VERSION
+
+    - name: Start and enable PostgreSQL 17 service
+      ansible.builtin.systemd:
+        name: postgresql-17
+        state: started
+        enabled: true
+
+    - name: Set PostgreSQL 17 configuration options
+      community.postgresql.postgresql_set:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+      become_user: postgres
+      loop: "{{ postgresql_options }}"
+      notify:
+        - Restart PostgreSQL
+
+    - name: Create PostgreSQL databases
+      community.postgresql.postgresql_db:
+        name: "{{ item }}"
+        encoding: 'UTF-8'
+      become_user: postgres
+      loop: "{{ postgresql_databases }}"
+
+    - name: Create PostgreSQL users
+      community.postgresql.postgresql_user:
+        db: "{{ item.db }}"
+        name: "{{ item.name }}"
+        password: "{{ item.password }}"
+      become_user: postgres
+      environment:
+        PGOPTIONS: "-c password_encryption=scram-sha-256"
+      loop: "{{ postgresql_users }}"
+
+    - name: Create PostgreSQL schemas
+      community.postgresql.postgresql_schema:
+        db: "{{ item.db }}"
+        name: "{{ item.name }}"
+        owner: "{{ item.owner }}"
+      become_user: postgres
+      loop: "{{ postgresql_schemas }}"
