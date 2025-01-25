@@ -1,2 +1,4 @@
 [postgresql_servers]
-POST-ANS ansible_host=192.168.186.125
+###POST-ANS ansible_host=192.168.186.125
+MASTER   ansible_host=192.168.186.115
+REPLICATE   ansible_host=192.168.186.116
